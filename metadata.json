@@ -1,0 +1,8 @@
+{
+  "name": "Remix Grand Estate Monopoly",
+  "description": "Full-featured interactive Monopoly tabletop board game engine implementing rooms, turn phases, property deeds, shared groups, houses and hotels, mortgages, auctions, Chance \u0026 Destiny decks, debt resolution, and AI opponents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
