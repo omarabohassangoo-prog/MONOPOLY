@@ -8,11 +8,7 @@
     { "source": "/health/ready", "destination": "/api/health/ready" }
   ],
   "functions": {
-    "api/[...path].ts": {
-      "maxDuration": 60
-    },
-    "api/health/ready.ts": {
-      "maxDuration": 30
-    }
+    "api/[...path].ts": { "maxDuration": 60 },
+    "api/health/ready.ts": { "maxDuration": 30 }
   }
 }
