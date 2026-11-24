@@ -1,36 +1,33 @@
 # نشر MONOPOLY على Vercel
 
-## 1) إنشاء قاعدة بيانات Neon
+## إعداد ثابت لموقع التطبيق
 
-Vercel لا ينشئ قاعدة بيانات تلقائياً من إعدادات هذا المستودع. أنشئ مشروع PostgreSQL في Neon يدوياً:
+للحصول على عنوان ثابت، اربط نطاقاً مخصصاً بمشروع Vercel من **Project → Settings → Domains**، واجعله النطاق الأساسي (Primary Domain). لا يمكن تثبيت نطاق مخصص من مستودع GitHub وحده؛ يجب إضافة النطاق والتحقق من DNS داخل حساب Vercel. بعد الربط استخدم النطاق نفسه في `APP_URL` و`CLIENT_ORIGIN`، ثم أعد النشر.
 
-1. افتح https://console.neon.tech/ وسجّل الدخول.
-2. أنشئ مشروعاً جديداً، واختر المنطقة المناسبة.
-3. من صفحة الاتصال بالمشروع، انسخ **Postgres connection string**. استخدم الرابط المخصص للتطبيق (ويُفضّل pooled connection string عند توفره)، ولا تنشره في المستودع أو ترسله في المحادثات.
-4. افتح **SQL Editor** في Neon، والصق محتوى `src/server/infra/migrations/0001_init.sql` كاملاً وشغّله مرة واحدة لإنشاء جداول التطبيق.
+عميل الواجهة يستخدم مسارات API نسبية (`/api/...`) واتصال Socket.IO من نفس الأصل، لذلك سيستخدم تلقائياً النطاق الأساسي الذي يفتح منه الموقع. معرّفات الغرف والبيانات محفوظة في PostgreSQL/Neon وليست في ذاكرة نشر Vercel المؤقتة.
 
-## 2) إعداد متغيرات Vercel
+## قاعدة البيانات
 
-في Vercel افتح **Project → Settings → Environment Variables**، وأضف المتغيرات التالية إلى Production (وأضفها إلى Preview/Development أيضاً إذا كنت تختبر تلك البيئات):
+1. أنشئ قاعدة PostgreSQL في Neon، وانسخ pooled connection string الخاص بها.
+2. في Vercel افتح **Project → Settings → Environment Variables** وأضف `DATABASE_URL` إلى Production (وأي بيئة اختبار مستخدمة).
+3. يعمل التطبيق على إنشاء جداول المخطط تلقائياً عند أول طلب API. يمكن تشغيل `src/server/infra/migrations/0001_init.sql` يدوياً في Neon SQL Editor كخطوة تهيئة بديلة؛ الأوامر تستخدم `IF NOT EXISTS`.
 
-- `DATABASE_URL`: سلسلة الاتصال التي نسختها من Neon.
-- `JWT_ACCESS_SECRET`: قيمة سرية عشوائية قوية بطول 32 حرفاً أو أكثر.
+## متغيرات Vercel
+
+أضف هذه المتغيرات إلى **Production** ثم أعد نشر آخر commit:
+
+- `DATABASE_URL`: سلسلة اتصال Neon، سرية.
+- `JWT_ACCESS_SECRET`: سر عشوائي ثابت لا يقل عن 32 حرفاً، سرّي ولا تغيّره بعد إصدار جلسات المستخدمين إلا إذا أردت إبطالها.
 - `NODE_ENV`: `production`.
-- `APP_URL`: عنوان Vercel الفعلي للموقع، مثل `https://your-project.vercel.app`.
-- `CLIENT_ORIGIN`: اختياري؛ أصل الموقع نفسه، من دون مسار، إذا احتجت تحديده صراحة.
+- `APP_URL`: النطاق الأساسي الكامل، مثل `https://game.example.com`.
+- `CLIENT_ORIGIN`: اختياري؛ النطاق الأساسي نفسه من دون مسار.
 
-لا تضع هذه القيم في متغيرات `VITE_*` ولا تحفظها داخل ملفات المستودع. بعد حفظها، نفّذ **Redeploy** لآخر commit لكي تدخل المتغيرات حيز التنفيذ.
+لا تضع قيم الأسرار في GitHub أو في متغيرات `VITE_*`.
 
-## 3) إعداد البناء
+## إعداد البناء
 
-اربط مستودع `omarabohassangoo-prog/MONOPOLY` بمشروع Vercel. استخدم:
+إعدادات `vercel.json` تستخدم Vite و`bun install` و`bun run build` وخرج `dist`. المسار `api/[...path].ts` يوجّه API إلى Express ويجهز مخطط قاعدة البيانات قبل كل طلب. افحص اتصال DB عبر `/api/health/ready` بعد النشر إذا كان هذا المسار مفعلاً في إصدار التطبيق، أو افحص Function Logs عند وجود خطأ. تهيئة DB الفاشلة تسجل سبباً منقحاً في Function Logs وتعيد `503 DATABASE_UNAVAILABLE` بدلاً من خطأ غامض.
 
-- Framework Preset: Vite
-- Build Command: `npm run build`
-- Output Directory: `dist`
+## حدود Vercel للاتصال الفوري
 
-المسار `api/[...path].ts` يمرر طلبات `/api/*` إلى تطبيق Express. تحقق من اتصال قاعدة البيانات عبر `https://your-project.vercel.app/health/ready`؛ يجب أن يعيد `{"ok":true,"database":true}`. إذا ظهر 500، راجع **Vercel → Deployments → Function Logs** وتأكد من اسم متغير البيئة، صلاحية سلسلة Neon، وتشغيل ملف SQL أعلاه.
-
-## حدود Vercel للعب الجماعي
-
-وظائف Vercel عديمة الحالة ولا تدعم تشغيل خادم Socket.IO دائم أو المجدول الخلفي الموجود في `server.ts`. واجهات HTTP مثل إنشاء الغرفة وبدء المباراة يمكنها العمل كوظائف، لكن الاتصال الفوري (الحضور والدردشة وتحديثات Socket.IO) والمهام المجدولة تحتاج خادماً دائماً يدعم WebSockets. لتفعيل اللعب الجماعي الفوري بالكامل، استضف خادم `server.ts` على خدمة تدعم WebSockets، ثم اربط الواجهة والخادم بها.
+Vercel Functions عديمة الحالة؛ لا تستضيف Socket.IO أو المجدول الخلفي كخادم دائم. لذلك HTTP API وتخزين الغرف في Neon يمكن أن يعملا، لكن تحديثات اللعب الحية والحضور والدردشة تتطلب خادماً دائماً يدعم WebSockets. لا يمكن إصلاح هذا القيد بمجرد تثبيت نطاق أو إعداد `vercel.json`؛ استضف خادم `server.ts` على منصة تدعم WebSockets للعب الجماعي الفوري بالكامل.
