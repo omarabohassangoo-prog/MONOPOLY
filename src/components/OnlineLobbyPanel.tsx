@@ -22,6 +22,15 @@ import {
   Eye,
 } from 'lucide-react';
 
+function getApiErrorMessage(err: unknown, isAr: boolean) {
+  if (err instanceof ApiClientError && err.code === 'GAME_NOT_FOUND') {
+    return isAr
+      ? 'الغرفة لم تعد موجودة. تم تحديث القائمة؛ استخدم رمز غرفة متاحاً.'
+      : 'This room is no longer available. The list was refreshed; use an available room code.';
+  }
+  return err instanceof ApiClientError ? err.message : String(err);
+}
+
 interface OnlineLobbyPanelProps {
   lang: Language;
   authUser: AuthUser | null;
@@ -88,12 +97,12 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       const res = await manopolyApi.listOpenRooms();
       setOpenRooms(res.games);
       setSpectatableRooms(res.activeSpectatableGames ?? []);
-    } catch {
-      // Keep previous list if transient error
+    } catch (err) {
+      setError(getApiErrorMessage(err, isAr));
     } finally {
       setLoadingRooms(false);
     }
-  }, []);
+  }, [isAr]);
 
   useEffect(() => {
     if (!activeGame) {
@@ -148,7 +157,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       const res = await manopolyApi.getGame(roomId);
       onSpectateGame(res.game);
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : String(err));
+      if (err instanceof ApiClientError && err.status === 404) {
+        await refreshRooms();
+      }
+      setError(getApiErrorMessage(err, isAr));
     } finally {
       setBusy(false);
     }
@@ -191,7 +203,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       );
       onEnterGame(res.game, res.player.id, res.player.token);
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : String(err));
+      setError(getApiErrorMessage(err, isAr));
     } finally {
       setBusy(false);
     }
@@ -214,7 +226,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       const res = await manopolyApi.joinRoom(code, cleanName, accessToken);
       onEnterGame(res.game, res.player.id, res.player.token);
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : String(err));
+      if (err instanceof ApiClientError && err.status === 404) {
+        await refreshRooms();
+      }
+      setError(getApiErrorMessage(err, isAr));
     } finally {
       setBusy(false);
     }
