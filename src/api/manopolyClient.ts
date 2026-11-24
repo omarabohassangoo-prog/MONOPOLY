@@ -224,7 +224,7 @@ async function requestJson<T>(
 
 export const manopolyApi = {
   register(payload: { email: string; username: string; password: string }) {
-    return requestJson<{ user: AuthUser; accessToken: string; refreshToken: string }>(
+    return requestJson<{ user: AuthUser; accessToken: string }>(
       '/api/auth/register',
       {
         method: 'POST',
@@ -234,7 +234,7 @@ export const manopolyApi = {
   },
 
   login(payload: { login: string; password: string }) {
-    return requestJson<{ user: AuthUser; accessToken: string; refreshToken: string }>(
+    return requestJson<{ user: AuthUser; accessToken: string }>(
       '/api/auth/login',
       {
         method: 'POST',
@@ -247,20 +247,16 @@ export const manopolyApi = {
     return requestJson<{ user: AuthUser }>('/api/auth/me', { accessToken });
   },
 
-  refreshSession(refreshToken: string) {
-    return requestJson<{ user: AuthUser; accessToken: string; refreshToken: string }>(
-      '/api/auth/refresh',
-      {
-        method: 'POST',
-        body: { refreshToken },
-      }
-    );
+  refreshSession() {
+    return requestJson<{ user: AuthUser; accessToken: string }>('/api/auth/refresh', {
+      method: 'POST',
+    });
   },
 
-  logout(refreshToken?: string | null) {
+  logout() {
     return requestJson<{ ok: boolean }>('/api/auth/logout', {
       method: 'POST',
-      body: refreshToken ? { refreshToken } : {},
+      body: {},
     });
   },
 

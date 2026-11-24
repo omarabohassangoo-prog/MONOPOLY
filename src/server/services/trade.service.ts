@@ -16,6 +16,7 @@ export class TradeService {
       'Only the current player may propose a trade'
     );
     invariant(s.status === 'ACTIVE', 'GAME_NOT_ACTIVE', 'Game is not active');
+    invariant(s.turnPhase === 'ACTION', 'INVALID_PHASE', 'Trades are only available during the action phase');
     invariant(!s.pendingTrade, 'TRADE_PENDING', 'A trade is already pending');
     invariant(
       fromId !== toId && s.players.some((p) => p.id === toId && p.status === 'ACTIVE'),

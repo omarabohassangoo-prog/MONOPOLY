@@ -63,15 +63,44 @@ const authRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const refreshCookieName = 'manopoly_refresh';
+const refreshCookieMaxAge = 14 * 24 * 60 * 60 * 1000;
+
+function refreshCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: env.NODE_ENV === 'production',
+    sameSite: 'strict' as const,
+    path: '/api/auth',
+    maxAge: refreshCookieMaxAge,
+  };
+}
+
+function readRefreshCookie(req: Request): string | undefined {
+  const cookieHeader = req.header('cookie');
+  if (!cookieHeader) return undefined;
+  for (const pair of cookieHeader.split(';')) {
+    const separator = pair.indexOf('=');
+    if (separator < 0 || pair.slice(0, separator).trim() !== refreshCookieName) continue;
+    const value = pair.slice(separator + 1).trim();
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 app.use('/api', apiLimiter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'manopoly-integrated', time: new Date().toISOString() });
 });
 
-app.get('/health/ready', (_req, res) => {
+app.get('/health/ready', async (_req, res) => {
   try {
-    const dbOk = checkDbHealth();
+    const dbOk = await checkDbHealth();
     res.json({ ok: dbOk, database: dbOk });
   } catch {
     res.status(503).json({ ok: false, database: false });
@@ -92,12 +121,12 @@ app.post('/api/auth/register', authRateLimit, async (req, res, next) => {
       })
       .parse(req.body);
     const passwordHash = await bcrypt.hash(b.password, 12);
-    const user = userRepo.create(b.email, b.username, passwordHash);
-    const refreshToken = userRepo.issueRefreshToken(user.id);
+    const user = await userRepo.create(b.email, b.username, passwordHash);
+    const refreshToken = await userRepo.issueRefreshToken(user.id);
+    res.cookie(refreshCookieName, refreshToken, refreshCookieOptions());
     res.status(201).json({
       user: { id: user.id, email: user.email, username: user.username },
       accessToken: signAccess(user.id),
-      refreshToken,
     });
   } catch (e) {
     next(e);
@@ -112,7 +141,7 @@ app.post('/api/auth/login', authRateLimit, async (req, res, next) => {
         password: z.string().min(1),
       })
       .parse(req.body);
-    const user = userRepo.findByLogin(b.login);
+    const user = await userRepo.findByLogin(b.login);
     if (
       !user ||
       user.status !== 'ACTIVE' ||
@@ -120,11 +149,11 @@ app.post('/api/auth/login', authRateLimit, async (req, res, next) => {
     ) {
       throw new DomainError('INVALID_CREDENTIALS', 'Invalid login or password', 401);
     }
-    const refreshToken = userRepo.issueRefreshToken(user.id);
+    const refreshToken = await userRepo.issueRefreshToken(user.id);
+    res.cookie(refreshCookieName, refreshToken, refreshCookieOptions());
     res.json({
       user: { id: user.id, email: user.email, username: user.username },
       accessToken: signAccess(user.id),
-      refreshToken,
     });
   } catch (e) {
     next(e);
@@ -137,7 +166,7 @@ app.get('/api/auth/me', async (req, res, next) => {
     if (!userId) {
       throw new DomainError('UNAUTHORIZED', 'Bearer access token required', 401);
     }
-    const user = userRepo.findById(userId);
+    const user = await userRepo.findById(userId);
     if (!user) {
       throw new DomainError('UNAUTHORIZED', 'User not found', 401);
     }
@@ -147,26 +176,29 @@ app.get('/api/auth/me', async (req, res, next) => {
   }
 });
 
-app.post('/api/auth/refresh', authRateLimit, (req, res, next) => {
+app.post('/api/auth/refresh', authRateLimit, async (req, res, next) => {
   try {
-    const b = z.object({ refreshToken: z.string().min(10) }).parse(req.body);
-    const rotated = userRepo.rotateRefreshToken(b.refreshToken);
+    const refreshToken = readRefreshCookie(req);
+    if (!refreshToken) {
+      throw new DomainError('INVALID_REFRESH_TOKEN', 'Refresh token is missing or expired', 401);
+    }
+    const rotated = await userRepo.rotateRefreshToken(refreshToken);
+    res.cookie(refreshCookieName, rotated.refreshToken, refreshCookieOptions());
     res.json({
       user: { id: rotated.user.id, email: rotated.user.email, username: rotated.user.username },
       accessToken: signAccess(rotated.user.id),
-      refreshToken: rotated.refreshToken,
     });
   } catch (e) {
     next(e);
   }
 });
 
-app.post('/api/auth/logout', (req, res, next) => {
+app.post('/api/auth/logout', async (req, res, next) => {
   try {
-    const b = z.object({ refreshToken: z.string().min(10).optional() }).parse(req.body ?? {});
-    if (b.refreshToken) {
-      userRepo.revokeRefreshToken(b.refreshToken);
-    }
+    const refreshToken = readRefreshCookie(req);
+    if (refreshToken) await userRepo.revokeRefreshToken(refreshToken);
+    const { maxAge: _maxAge, ...clearOptions } = refreshCookieOptions();
+    res.clearCookie(refreshCookieName, clearOptions);
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -218,7 +250,7 @@ async function resolveUserId(req: Request): Promise<string | undefined> {
     if (!payload.sub || payload.type !== 'access') {
       throw new Error('invalid access token');
     }
-    const user = userRepo.findById(String(payload.sub));
+    const user = await userRepo.findById(String(payload.sub));
     if (!user || user.status !== 'ACTIVE') {
       throw new Error('inactive user');
     }
@@ -263,7 +295,7 @@ app.post('/api/games', async (req, res, next) => {
 
     const code = randomBytes(3).toString('hex').toUpperCase();
     const state = engine.create(code, player, b.settings);
-    repo.create(state, userId ?? id, state.settings);
+    await repo.create(state, userId ?? id, state.settings);
 
     res.status(201).json({
       game: sanitizePublicState(state),
@@ -274,20 +306,24 @@ app.post('/api/games', async (req, res, next) => {
   }
 });
 
-app.get('/api/games', (_req, res, next) => {
+app.get('/api/games', async (_req, res, next) => {
   try {
+    const [waitingGames, activeGames] = await Promise.all([
+      repo.listOpen('WAITING'),
+      repo.listOpen('ACTIVE'),
+    ]);
     res.json({
-      games: repo.listOpen('WAITING'),
-      activeSpectatableGames: repo.listOpen('ACTIVE'),
+      games: waitingGames,
+      activeSpectatableGames: activeGames,
     });
   } catch (e) {
     next(e);
   }
 });
 
-app.get('/api/games/:id', (req, res, next) => {
+app.get('/api/games/:id', async (req, res, next) => {
   try {
-    const g = repo.get(req.params.id!);
+    const g = await repo.get(req.params.id!);
     if (!g) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
     const state = g.state;
     if (!state.settings?.allowSpectators) actorFor(state, req);
@@ -297,9 +333,9 @@ app.get('/api/games/:id', (req, res, next) => {
   }
 });
 
-app.get('/api/games/:id/events', (req, res, next) => {
+app.get('/api/games/:id/events', async (req, res, next) => {
   try {
-    const g = repo.get(req.params.id!);
+    const g = await repo.get(req.params.id!);
     if (!g) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
     const state = g.state;
     if (!state.settings?.allowSpectators) actorFor(state, req);
@@ -307,19 +343,19 @@ app.get('/api/games/:id/events', (req, res, next) => {
     if (!Number.isInteger(after) || after < 0) {
       throw new DomainError('INVALID_SEQUENCE', 'after must be a non-negative integer');
     }
-    res.json({ events: repo.listEvents(g.id, after) });
+    res.json({ events: await repo.listEvents(g.id, after) });
   } catch (e) {
     next(e);
   }
 });
 
-app.get('/api/games/:id/transactions', (req, res, next) => {
+app.get('/api/games/:id/transactions', async (req, res, next) => {
   try {
-    const g = repo.get(req.params.id!);
+    const g = await repo.get(req.params.id!);
     if (!g) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
     const state = g.state;
     if (!state.settings?.allowSpectators) actorFor(state, req);
-    res.json({ transactions: repo.listTransactions(g.id) });
+    res.json({ transactions: await repo.listTransactions(g.id) });
   } catch (e) {
     next(e);
   }
@@ -327,7 +363,7 @@ app.get('/api/games/:id/transactions', (req, res, next) => {
 
 app.post('/api/games/:id/join', async (req, res, next) => {
   try {
-    const g = repo.get(req.params.id!);
+    const g = await repo.get(req.params.id!);
     if (!g || !g.state) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
 
     const b = z.object({ name: z.string().trim().min(2).max(24) }).parse(req.body);
@@ -359,7 +395,7 @@ app.post('/api/games/:id/join', async (req, res, next) => {
       getOutOfJailCards: 0,
     });
 
-    repo.save(s, g.version);
+    await repo.save(s, g.version);
     const pub = sanitizePublicState(s);
     emitGameUpdate(g.id, pub);
     res.json({ game: pub, player: { id, token } });
@@ -368,14 +404,14 @@ app.post('/api/games/:id/join', async (req, res, next) => {
   }
 });
 
-const mutate = (
+const mutate = async (
   req: Request,
   res: Response,
   next: NextFunction,
   fn: (s: GameState, actor: Player) => unknown
 ) => {
   try {
-    const g = repo.get(req.params.id!);
+    const g = await repo.get(req.params.id!);
     if (!g || !g.state) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
 
     const s = g.state;
@@ -402,7 +438,7 @@ const mutate = (
       s.processedActionIds.splice(0, s.processedActionIds.length - 200);
     }
 
-    repo.save(s, g.version);
+    await repo.save(s, g.version);
     const pub = sanitizePublicState(s);
     emitGameUpdate(g.id, pub);
     res.json({ result: publicResult(out, s), state: pub });
