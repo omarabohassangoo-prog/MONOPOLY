@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'crypto';
-import { getDb } from '../infra/db.ts';
+import { and, eq, gt, isNull, or } from 'drizzle-orm';
+import { db, runInTransaction } from '../infra/db.ts';
+import { refreshTokens, users } from '../infra/schema.ts';
 import { DomainError } from '../domain/errors.ts';
 
 export interface UserRecord {
@@ -14,102 +16,121 @@ function hashRefreshToken(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
 }
 
+function publicUser(user: typeof users.$inferSelect): Omit<UserRecord, 'passwordHash'> {
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    status: user.status as UserRecord['status'],
+  };
+}
+
 export class UserRepository {
-  create(email: string, username: string, passwordHash: string): UserRecord {
-    const db = getDb();
+  async create(email: string, username: string, passwordHash: string): Promise<UserRecord> {
     const id = randomUUID();
-    const now = new Date().toISOString();
+    const now = new Date();
     const normalizedEmail = email.toLowerCase();
     try {
-      db.prepare(
-        `INSERT INTO users (id, email, username, password_hash, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`
-      ).run(id, normalizedEmail, username, passwordHash, now, now);
+      await db.insert(users).values({
+        id,
+        email: normalizedEmail,
+        username,
+        passwordHash,
+        status: 'ACTIVE',
+        createdAt: now,
+        updatedAt: now,
+      });
     } catch (err) {
-      if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+      if (typeof err === 'object' && err !== null && 'code' in err && err.code === '23505') {
         throw new DomainError('ALREADY_EXISTS', 'Email or username already exists', 409);
       }
       throw err;
     }
+    return { id, email: normalizedEmail, username, passwordHash, status: 'ACTIVE' };
+  }
+
+  async findByLogin(login: string): Promise<UserRecord | null> {
+    const [row] = await db
+      .select()
+      .from(users)
+      .where(or(eq(users.email, login.toLowerCase()), eq(users.username, login)))
+      .limit(1);
+    if (!row) return null;
     return {
-      id,
-      email: normalizedEmail,
-      username,
-      passwordHash,
-      status: 'ACTIVE',
+      id: row.id,
+      email: row.email,
+      username: row.username,
+      passwordHash: row.passwordHash,
+      status: row.status as UserRecord['status'],
     };
   }
 
-  findByLogin(login: string): UserRecord | null {
-    const db = getDb();
-    const row = db
-      .prepare(
-        `SELECT id, email, username, password_hash AS passwordHash, status
-         FROM users
-         WHERE email = ? OR username = ?
-         LIMIT 1`
-      )
-      .get(login.toLowerCase(), login) as UserRecord | undefined;
-    return row ?? null;
+  async findById(id: string): Promise<Omit<UserRecord, 'passwordHash'> | null> {
+    const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    return row ? publicUser(row) : null;
   }
 
-  findById(id: string): Omit<UserRecord, 'passwordHash'> | null {
-    const db = getDb();
-    const row = db
-      .prepare(`SELECT id, email, username, status FROM users WHERE id = ? LIMIT 1`)
-      .get(id) as Omit<UserRecord, 'passwordHash'> | undefined;
-    return row ?? null;
-  }
-
-  issueRefreshToken(userId: string, ttlDays = 14): string {
-    const db = getDb();
+  async issueRefreshToken(userId: string, ttlDays = 14): Promise<string> {
     const raw = randomBytes(36).toString('base64url');
     const now = new Date();
-    const expires = new Date(now.getTime() + ttlDays * 86_400_000);
-    db.prepare(
-      `INSERT INTO refresh_tokens (id, token_hash, user_id, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(randomUUID(), hashRefreshToken(raw), userId, expires.toISOString(), now.toISOString());
+    const expiresAt = new Date(now.getTime() + ttlDays * 86_400_000);
+    await db.insert(refreshTokens).values({
+      id: randomUUID(),
+      tokenHash: hashRefreshToken(raw),
+      userId,
+      expiresAt,
+      createdAt: now,
+    });
     return raw;
   }
 
-  rotateRefreshToken(rawToken: string): { user: Omit<UserRecord, 'passwordHash'>; refreshToken: string } {
-    const db = getDb();
-    const tokenHash = hashRefreshToken(rawToken);
-    const row = db
-      .prepare(
-        `SELECT id, user_id AS userId, expires_at AS expiresAt, revoked_at AS revokedAt
-         FROM refresh_tokens
-         WHERE token_hash = ?
-         LIMIT 1`
-      )
-      .get(tokenHash) as
-      | { id: string; userId: string; expiresAt: string; revokedAt: string | null }
-      | undefined;
+  async rotateRefreshToken(
+    rawToken: string
+  ): Promise<{ user: Omit<UserRecord, 'passwordHash'>; refreshToken: string }> {
+    return runInTransaction(async (tx) => {
+      const tokenHash = hashRefreshToken(rawToken);
+      const [row] = await tx
+        .select()
+        .from(refreshTokens)
+        .where(
+          and(
+            eq(refreshTokens.tokenHash, tokenHash),
+            isNull(refreshTokens.revokedAt),
+            gt(refreshTokens.expiresAt, new Date())
+          )
+        )
+        .for('update')
+        .limit(1);
 
-    if (!row || row.revokedAt || Date.now() > Date.parse(row.expiresAt)) {
-      throw new DomainError('INVALID_REFRESH_TOKEN', 'Refresh token is invalid or expired', 401);
-    }
+      if (!row) {
+        throw new DomainError('INVALID_REFRESH_TOKEN', 'Refresh token is invalid or expired', 401);
+      }
 
-    const user = this.findById(row.userId);
-    if (!user || user.status !== 'ACTIVE') {
-      throw new DomainError('INVALID_REFRESH_TOKEN', 'Account is inactive', 401);
-    }
+      const [account] = await tx.select().from(users).where(eq(users.id, row.userId)).limit(1);
+      if (!account || account.status !== 'ACTIVE') {
+        throw new DomainError('INVALID_REFRESH_TOKEN', 'Account is inactive', 401);
+      }
 
-    db.prepare(`UPDATE refresh_tokens SET revoked_at = ? WHERE id = ?`).run(
-      new Date().toISOString(),
-      row.id
-    );
+      const now = new Date();
+      await tx.update(refreshTokens).set({ revokedAt: now }).where(eq(refreshTokens.id, row.id));
 
-    const nextRefresh = this.issueRefreshToken(user.id);
-    return { user, refreshToken: nextRefresh };
+      const refreshToken = randomBytes(36).toString('base64url');
+      await tx.insert(refreshTokens).values({
+        id: randomUUID(),
+        tokenHash: hashRefreshToken(refreshToken),
+        userId: account.id,
+        expiresAt: new Date(now.getTime() + 14 * 86_400_000),
+        createdAt: now,
+      });
+
+      return { user: publicUser(account), refreshToken };
+    });
   }
 
-  revokeRefreshToken(rawToken: string): void {
-    const db = getDb();
-    db.prepare(`UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`).run(
-      new Date().toISOString(),
-      hashRefreshToken(rawToken)
-    );
+  async revokeRefreshToken(rawToken: string): Promise<void> {
+    await db
+      .update(refreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(refreshTokens.tokenHash, hashRefreshToken(rawToken)), isNull(refreshTokens.revokedAt)));
   }
 }

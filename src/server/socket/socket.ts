@@ -98,7 +98,7 @@ export const attachSocket = (server: HttpServer): Server => {
           if (!payload?.gameId || typeof payload.gameId !== 'string') {
             throw new Error('INVALID_GAME_ID');
           }
-          const g = repo.get(payload.gameId);
+          const g = await repo.get(payload.gameId);
           if (!g?.state) throw new Error('GAME_NOT_FOUND');
 
           const s = g.state;
@@ -138,7 +138,7 @@ export const attachSocket = (server: HttpServer): Server => {
           if (!payload?.gameId || typeof payload.gameId !== 'string') {
             throw new Error('INVALID_GAME_ID');
           }
-          const g = repo.get(payload.gameId);
+          const g = await repo.get(payload.gameId);
           if (!g?.state) throw new Error('GAME_NOT_FOUND');
           if (g.state.settings?.allowSpectators === false) {
             throw new Error('SPECTATORS_DISABLED');

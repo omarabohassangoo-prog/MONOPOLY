@@ -113,8 +113,18 @@ describe('GameEngine rules', () => {
     assert.equal(s.bankBuildings?.housesRemaining, 30);
   });
 
+  it('rejects trade proposals outside the action phase', () => {
+    const { s, current, other } = activeGame();
+    const trade = new TradeService();
+    assert.throws(
+      () => trade.propose(s, current, other, { cashFrom: 0, cashTo: 0, assetsFrom: [], assetsTo: [] }),
+      /Trades are only available during the action phase/
+    );
+  });
+
   it('rejects trade of properties not owned by the offerer', () => {
     const { s, current, other } = activeGame();
+    s.turnPhase = 'ACTION';
     const trade = new TradeService();
     assert.throws(
       () => trade.propose(s, current, other, { cashFrom: 0, cashTo: 0, assetsFrom: [1], assetsTo: [] }),

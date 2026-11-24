@@ -31,7 +31,13 @@ async function jsonReq(path: string, init: RequestInit = {}) {
     },
   });
   const data = await res.json();
-  return { status: res.status, data };
+  const setCookie = res.headers.get('set-cookie');
+  return {
+    status: res.status,
+    data,
+    cookie: setCookie?.split(';', 1)[0],
+    setCookie,
+  };
 }
 
 describe('Integrated Manopoly HTTP API', () => {
@@ -164,7 +170,10 @@ describe('Integrated Manopoly HTTP API', () => {
       }),
     });
     assert.equal(reg.status, 201);
-    assert.ok(reg.data.refreshToken);
+    assert.ok(reg.cookie?.startsWith('manopoly_refresh='));
+    assert.match(reg.setCookie ?? '', /HttpOnly/i);
+    assert.match(reg.setCookie ?? '', /SameSite=Strict/i);
+    assert.equal('refreshToken' in reg.data, false);
 
     const me = await jsonReq('/api/auth/me', {
       headers: { Authorization: `Bearer ${reg.data.accessToken}` },
@@ -174,28 +183,33 @@ describe('Integrated Manopoly HTTP API', () => {
 
     const refreshed = await jsonReq('/api/auth/refresh', {
       method: 'POST',
-      body: JSON.stringify({ refreshToken: reg.data.refreshToken }),
+      headers: { Cookie: reg.cookie! },
+      body: JSON.stringify({}),
     });
     assert.equal(refreshed.status, 200);
     assert.ok(refreshed.data.accessToken);
-    assert.notEqual(refreshed.data.refreshToken, reg.data.refreshToken);
+    assert.ok(refreshed.cookie?.startsWith('manopoly_refresh='));
+    assert.notEqual(refreshed.cookie, reg.cookie);
 
-    // Replaying revoked refresh token fails
     const replay = await jsonReq('/api/auth/refresh', {
       method: 'POST',
-      body: JSON.stringify({ refreshToken: reg.data.refreshToken }),
+      headers: { Cookie: reg.cookie! },
+      body: JSON.stringify({}),
     });
     assert.equal(replay.status, 401);
 
     const out = await jsonReq('/api/auth/logout', {
       method: 'POST',
-      body: JSON.stringify({ refreshToken: refreshed.data.refreshToken }),
+      headers: { Cookie: refreshed.cookie! },
+      body: JSON.stringify({}),
     });
     assert.equal(out.status, 200);
+    assert.equal(out.cookie, 'manopoly_refresh=');
 
     const afterLogout = await jsonReq('/api/auth/refresh', {
       method: 'POST',
-      body: JSON.stringify({ refreshToken: refreshed.data.refreshToken }),
+      headers: { Cookie: refreshed.cookie! },
+      body: JSON.stringify({}),
     });
     assert.equal(afterLogout.status, 401);
   });

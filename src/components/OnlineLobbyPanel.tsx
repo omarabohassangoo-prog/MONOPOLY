@@ -26,8 +26,7 @@ interface OnlineLobbyPanelProps {
   lang: Language;
   authUser: AuthUser | null;
   accessToken: string | null;
-  refreshToken: string | null;
-  onAuthChange: (user: AuthUser | null, token: string | null, refreshToken: string | null) => void;
+  onAuthChange: (user: AuthUser | null, token: string | null) => void;
   activeGame: OnlineGameState | null;
   myPlayerId: string | null;
   myPlayerToken: string | null;
@@ -42,7 +41,6 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
   lang,
   authUser,
   accessToken,
-  refreshToken,
   onAuthChange,
   activeGame,
   myPlayerId,
@@ -114,7 +112,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
           username: usernameInput.trim(),
           password: passwordInput,
         });
-        onAuthChange(res.user, res.accessToken, res.refreshToken);
+        onAuthChange(res.user, res.accessToken);
         setPlayerName(res.user.username);
         setAuthMode('none');
       } else if (authMode === 'login') {
@@ -122,7 +120,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
           login: loginInput.trim(),
           password: passwordInput,
         });
-        onAuthChange(res.user, res.accessToken, res.refreshToken);
+        onAuthChange(res.user, res.accessToken);
         setPlayerName(res.user.username);
         setAuthMode('none');
       }
@@ -136,11 +134,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
   const handleSignOut = async () => {
     try {
-      await manopolyApi.logout(refreshToken);
+      await manopolyApi.logout();
     } catch {
       // Ignore network error on logout
     }
-    onAuthChange(null, null, null);
+    onAuthChange(null, null);
   };
 
   const handleSpectateRoom = async (roomId: string) => {

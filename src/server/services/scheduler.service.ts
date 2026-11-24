@@ -10,7 +10,10 @@ export function startTimeoutScheduler(intervalMs = 5000): () => void {
   const auction = new AuctionService();
   const cards = new CardsService(engine);
 
-  const settlePendingDecisionOnTimeout = (s: ReturnType<GameRepository['listActiveGames']>[number]['state'], playerId: string) => {
+  const settlePendingDecisionOnTimeout = (
+    s: Awaited<ReturnType<GameRepository['listActiveGames']>>[number]['state'],
+    playerId: string
+  ) => {
     const d = s.pendingDecision;
     if (!d || d.playerId !== playerId) return;
 
@@ -47,11 +50,11 @@ export function startTimeoutScheduler(intervalMs = 5000): () => void {
     }
   };
 
-  const tick = () => {
+  const tick = async () => {
     const now = Date.now();
-    let activeGames: ReturnType<GameRepository['listActiveGames']> = [];
+    let activeGames: Awaited<ReturnType<GameRepository['listActiveGames']>> = [];
     try {
-      activeGames = repo.listActiveGames();
+      activeGames = await repo.listActiveGames();
     } catch {
       return;
     }
@@ -60,6 +63,13 @@ export function startTimeoutScheduler(intervalMs = 5000): () => void {
       try {
         const s = g.state;
         let mutated = false;
+
+        if (s.pendingTrade && now > Date.parse(s.pendingTrade.expiresAt)) {
+          const tradeId = s.pendingTrade.id;
+          delete s.pendingTrade;
+          engine.record(s, 'TRADE_EXPIRED', 'Pending trade expired', { tradeId });
+          mutated = true;
+        }
 
         if (s.pendingAuction?.expiresAt && now > Date.parse(s.pendingAuction.expiresAt)) {
           for (const id of s.pendingAuction.eligibleIds) {
@@ -81,11 +91,6 @@ export function startTimeoutScheduler(intervalMs = 5000): () => void {
           s.turnPhase !== 'AUCTION'
         ) {
           const p = engine.current(s);
-
-          if (s.pendingTrade && now > Date.parse(s.pendingTrade.expiresAt)) {
-            delete s.pendingTrade;
-            engine.record(s, 'TRADE_EXPIRED', 'Pending trade expired');
-          }
 
           if (s.pendingMortgageDecisions && s.pendingMortgageDecisions.length > 0) {
             for (const m of [...s.pendingMortgageDecisions]) {
@@ -116,7 +121,7 @@ export function startTimeoutScheduler(intervalMs = 5000): () => void {
         }
 
         if (mutated) {
-          repo.save(s, g.version);
+          await repo.save(s, g.version);
           emitGameUpdate(g.id, sanitizePublicState(s));
         }
       } catch {
@@ -125,7 +130,7 @@ export function startTimeoutScheduler(intervalMs = 5000): () => void {
     }
   };
 
-  const timer = setInterval(tick, intervalMs);
+  const timer = setInterval(() => void tick(), intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);
 }

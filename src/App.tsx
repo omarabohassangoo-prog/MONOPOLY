@@ -1,15 +1,21 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import useSWR from 'swr';
 import { BoardView } from './components/BoardView';
 import { ClassBlueprintModal } from './components/ClassBlueprintModal';
 import { DeedInspector } from './components/DeedInspector';
 import { PortfolioManager } from './components/PortfolioManager';
 import { TitleLobby } from './components/TitleLobby';
-import { OnlineLobbyPanel } from './components/OnlineLobbyPanel';
-import { OnlineGameView } from './components/OnlineGameView';
+const OnlineLobbyPanel = React.lazy(() =>
+  import('./components/OnlineLobbyPanel').then((module) => ({ default: module.OnlineLobbyPanel }))
+);
+const OnlineGameView = React.lazy(() =>
+  import('./components/OnlineGameView').then((module) => ({ default: module.OnlineGameView }))
+);
 import { TokenIcon } from './components/TokenAndDice';
 import { IncomingTradeModal, TradeModal } from './components/TradeModal';
 import {
   connectGameSocket,
+  manopolyApi,
   type AuthUser,
   type ChatMessage,
   type GameSocketHandle,
@@ -81,11 +87,15 @@ export default function App() {
   const [showRules, setShowRules] = useState(false);
   const [showTradeModal, setShowTradeModal] = useState(false);
 
-  // Integrated backend multiplayer state (tokens kept strictly in React memory)
   const [playMode, setPlayMode] = useState<'local' | 'online'>('local');
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [refreshToken, setRefreshToken] = useState<string | null>(null);
+  const { data: authSession, mutate: mutateAuthSession } = useSWR<{
+    user: AuthUser;
+    accessToken: string;
+  } | null>('manopoly-auth-session', () => manopolyApi.refreshSession(), {
+    shouldRetryOnError: false,
+  });
+  const authUser = authSession?.user ?? null;
+  const accessToken = authSession?.accessToken ?? null;
   const [onlineGame, setOnlineGame] = useState<OnlineGameState | null>(null);
   const [myPlayerId, setMyPlayerId] = useState<string | null>(null);
   const [myPlayerToken, setMyPlayerToken] = useState<string | null>(null);
@@ -629,15 +639,13 @@ export default function App() {
             />
           ) : (
             <main className="max-w-6xl w-full mx-auto px-6 py-8">
+              <Suspense fallback={<p role="status" className="text-center text-emerald-100">جارٍ تحميل اللعب الجماعي…</p>}>
               <OnlineLobbyPanel
                 lang={lang}
                 authUser={authUser}
                 accessToken={accessToken}
-                refreshToken={refreshToken}
-                onAuthChange={(u, tok, rtok) => {
-                  setAuthUser(u);
-                  setAccessToken(tok);
-                  setRefreshToken(rtok);
+                onAuthChange={(user, token) => {
+                  void mutateAuthSession(user && token ? { user, accessToken: token } : null, false);
                 }}
                 activeGame={onlineGame}
                 myPlayerId={myPlayerId}
@@ -677,12 +685,14 @@ export default function App() {
                   }
                 }}
               />
+              </Suspense>
             </main>
           )}
         </>
       )}
 
       {viewState === 'ONLINE_PLAYING' && onlineGame && ((myPlayerId && myPlayerToken) || isSpectator) && (
+        <Suspense fallback={<p role="status" className="p-6 text-center">جارٍ تحميل اللعبة…</p>}>
         <OnlineGameView
           lang={lang}
           game={onlineGame}
@@ -707,6 +717,7 @@ export default function App() {
             setViewState('TITLE_MENU');
           }}
         />
+        </Suspense>
       )}
 
       {(viewState === 'PLAYING' || viewState === 'GAME_OVER') && game && (
